@@ -1,67 +1,56 @@
-from flask import Flask, request, jsonify
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from models import db, Document, User
-from utils import vectorize_query, search_documents
-from redis import Redis
-import numpy as np
+from fastapi import FastAPI, HTTPException, Depends
+import chromadb
+import redis
 import time
+from threading import Thread
+from fastapi.background import BackgroundTasks
 
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///documents.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app = FastAPI()
+cache = redis.Redis(host='localhost', port=6379, db=0)
+user_db = {}  # Simple in-memory user tracking
 
-# Initialize extensions
-db.init_app(app)
-redis_client = Redis(host='localhost', port=6379, db=0)  # Redis for caching
+# Initialize ChromaDB
+client = chromadb.Client()
+collection = client.create_collection("documents")
 
-# Initialize rate limiting
-limiter = Limiter(app, key_func=get_remote_address, default_limits=["5 per minute"])
+def scrape_articles():
+    while True:
+        # Scrape news articles and insert into ChromaDB
+        pass
 
-# Endpoint to check if API is active
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "active"}), 200
+@app.on_event("startup")
+async def startup_event():
+    # Start scraping thread
+    thread = Thread(target=scrape_articles)
+    thread.start()
 
-# Endpoint to search documents
-@app.route('/search', methods=['POST'])
-@limiter.limit("5 per minute", key_func=lambda: request.json['user_id'])
-def search():
+@app.get("/health")
+async def health():
+    return {"status": "API is running"}
+
+@app.get("/search")
+async def search(text: str, top_k: int = 5, threshold: float = 0.8, user_id: str = None):
     start_time = time.time()
-    data = request.json
-    query = data.get('text', '')
-    top_k = data.get('top_k', 5)
-    threshold = data.get('threshold', 0.5)
-    user_id = data['user_id']
-
-    # Check cache first
-    cache_key = f"search:{query}:{top_k}:{threshold}"
-    cached_result = redis_client.get(cache_key)
-    if cached_result:
-        return jsonify({"results": cached_result, "cached": True}), 200
-
-    # Fetch user from DB and update request count
-    user = User.query.filter_by(id=user_id).first()
-    if not user:
-        user = User(id=user_id, request_count=1)
-        db.session.add(user)
+    
+    if user_id in user_db and user_db[user_id] > 5:
+        raise HTTPException(status_code=429, detail="Too many requests")
+    
+    if user_id in user_db:
+        user_db[user_id] += 1
     else:
-        user.request_count += 1
-    db.session.commit()
+        user_db[user_id] = 1
 
-    # Retrieve top-k documents based on similarity
-    query_vector = vectorize_query(query)
-    results = search_documents(query_vector, top_k, threshold)
+    # Check cache
+    cached_result = cache.get(text)
+    if cached_result:
+        return {"results": cached_result}
 
-    # Cache the results
-    redis_client.set(cache_key, jsonify(results), ex=300)  # Cache expires in 5 minutes
+    # Query ChromaDB for top_k results
+    results = collection.query(text, top_k=top_k, threshold=threshold)
+    
+    # Cache the result
+    cache.set(text, results)
 
-    # Record and return the response
+    # Calculate inference time
     inference_time = time.time() - start_time
-    response = {"results": results, "inference_time": inference_time}
-    return jsonify(response), 200
-
-if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    app.run(debug=True)
+    return {"results": results, "inference_time": inference_time}
