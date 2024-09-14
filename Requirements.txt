@@ -1,8 +1,9 @@
-fastapi==0.95.1
+fastapi==0.95.2
 uvicorn==0.22.0
-redis==4.5.5
-chromadb==0.3.21
+chromadb==0.2.0
+redis==4.7.1
 requests==2.31.0
-loguru==0.7.0  # For logging
-sentry-sdk==1.30.0  # For advanced logging/monitoring (optional)
-beautifulsoup4==4.12.2  # For HTML parsing
+beautifulsoup4==4.12.2
+transformers==4.36.1
+torch==2.0.1
+numpy==1.24.4
